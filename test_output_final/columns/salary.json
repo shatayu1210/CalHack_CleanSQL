@@ -1,0 +1,32 @@
+{
+  "dataset": "test_data.csv",
+  "column": "salary",
+  "profile": {
+    "name": "salary",
+    "duckdb_type": "BIGINT",
+    "null_count": 0,
+    "null_ratio": 0.0,
+    "distinct_count": 5,
+    "semantic_type": "numeric",
+    "numeric": {
+      "min": 50000,
+      "max": 75000,
+      "mean": 62000.0,
+      "stddev": 10368.220676663861,
+      "q1": 55000.0,
+      "median": 60000.0,
+      "q3": 70000.0,
+      "iqr": 15000.0,
+      "outlier_low": 32500.0,
+      "outlier_high": 92500.0,
+      "outlier_count": 0,
+      "zeros": 0,
+      "negatives": 0
+    },
+    "examples": [
+      50000,
+      75000,
+      60000
+    ]
+  }
+}

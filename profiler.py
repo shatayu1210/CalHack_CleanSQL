@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import sys
 import time
-import hashlib
 from typing import Any, Dict, List, Optional
+
 import duckdb
 
 try:
@@ -375,6 +376,35 @@ def main():
     print(f"[ok] Output: {args.out}")
     if args.weaviate_url:
         print(f"[ok] Ingested to Weaviate class: {args.weaviate_class}")
+    
+    # NEW: Initialize LLM-powered data assistant
+    try:
+        from llm_integration import DataAssistant
+        print("\n🤖 Initializing AI Data Assistant...")
+        assistant = DataAssistant()
+        assistant.setup_database(prof, args.csv)
+        
+        # Interactive Q&A loop
+        print("\n💬 Ask questions about your data! (type 'quit' to exit)")
+        print("💡 Example: 'What's the average age?' or 'Show me the top 5 cities'")
+        
+        while True:
+            question = input("\n❓ Your question: ").strip()
+            if question.lower() in ['quit', 'exit', 'q']:
+                break
+            
+            if question:
+                response = assistant.ask_question(question, prof)
+                print(f"\n🤖 Assistant: {response}")
+        
+        assistant.close()
+        print("\n👋 Goodbye!")
+        
+    except ImportError:
+        print("\n⚠️  LLM integration not available. Install anthropic and python-dotenv to enable AI features.")
+    except Exception as e:
+        print(f"\n⚠️  LLM integration failed: {e}")
+        print("Continuing without AI features...")
 
 
 if __name__ == "__main__":
