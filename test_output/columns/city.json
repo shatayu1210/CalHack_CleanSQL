@@ -1,0 +1,47 @@
+{
+  "dataset": "test_data.csv",
+  "column": "city",
+  "profile": {
+    "name": "city",
+    "duckdb_type": "VARCHAR",
+    "null_count": 0,
+    "null_ratio": 0.0,
+    "distinct_count": 5,
+    "semantic_type": "category",
+    "categorical": {
+      "topk": [
+        {
+          "value": "San Francisco",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "Chicago",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "New York",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "Boston",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "Seattle",
+          "count": 1,
+          "ratio": 0.2
+        }
+      ],
+      "avg_length": 8.2
+    },
+    "examples": [
+      "New York",
+      "San Francisco",
+      "Chicago"
+    ]
+  }
+}
