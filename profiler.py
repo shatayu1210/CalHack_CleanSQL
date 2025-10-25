@@ -63,7 +63,7 @@ def ensure_class(class_name: str):
         class_obj = {
             "class": class_name,
             "description": "CleanSQL column profiles for hybrid search",
-            "vectorizer": "none",
+            "vectorizer": "text2vec-transformers",
             "properties": [
                 {"name": "dataset", "dataType": ["text"]},
                 {"name": "column", "dataType": ["text"]},
