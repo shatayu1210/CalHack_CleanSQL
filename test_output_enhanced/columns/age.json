@@ -1,0 +1,32 @@
+{
+  "dataset": "test_data.csv",
+  "column": "age",
+  "profile": {
+    "name": "age",
+    "duckdb_type": "BIGINT",
+    "null_count": 0,
+    "null_ratio": 0.0,
+    "distinct_count": 5,
+    "semantic_type": "numeric",
+    "numeric": {
+      "min": 25,
+      "max": 35,
+      "mean": 30.0,
+      "stddev": 3.8078865529319543,
+      "q1": 28.0,
+      "median": 30.0,
+      "q3": 32.0,
+      "iqr": 4.0,
+      "outlier_low": 22.0,
+      "outlier_high": 38.0,
+      "outlier_count": 0,
+      "zeros": 0,
+      "negatives": 0
+    },
+    "examples": [
+      25,
+      30,
+      35
+    ]
+  }
+}

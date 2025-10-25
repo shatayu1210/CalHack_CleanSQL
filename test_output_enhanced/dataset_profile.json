@@ -1,0 +1,157 @@
+{
+  "dataset": {
+    "path": "/Users/dhruvnakum/MyStuff/cal-hacks/CalHack_CleanSQL/test_data.csv",
+    "filename": "test_data.csv",
+    "size_bytes": 140,
+    "row_count": 5,
+    "column_count": 4,
+    "duplicate_row_count": 0,
+    "created_at": 1761385441
+  },
+  "columns": [
+    {
+      "name": "name",
+      "duckdb_type": "VARCHAR",
+      "null_count": 0,
+      "null_ratio": 0.0,
+      "distinct_count": 5,
+      "semantic_type": "category",
+      "categorical": {
+        "topk": [
+          {
+            "value": "John",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "Jane",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "Charlie",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "Alice",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "Bob",
+            "count": 1,
+            "ratio": 0.2
+          }
+        ],
+        "avg_length": 4.6
+      },
+      "examples": [
+        "John",
+        "Jane",
+        "Bob"
+      ]
+    },
+    {
+      "name": "age",
+      "duckdb_type": "BIGINT",
+      "null_count": 0,
+      "null_ratio": 0.0,
+      "distinct_count": 5,
+      "semantic_type": "numeric",
+      "numeric": {
+        "min": 25,
+        "max": 35,
+        "mean": 30.0,
+        "stddev": 3.8078865529319543,
+        "q1": 28.0,
+        "median": 30.0,
+        "q3": 32.0,
+        "iqr": 4.0,
+        "outlier_low": 22.0,
+        "outlier_high": 38.0,
+        "outlier_count": 0,
+        "zeros": 0,
+        "negatives": 0
+      },
+      "examples": [
+        25,
+        30,
+        35
+      ]
+    },
+    {
+      "name": "city",
+      "duckdb_type": "VARCHAR",
+      "null_count": 0,
+      "null_ratio": 0.0,
+      "distinct_count": 5,
+      "semantic_type": "category",
+      "categorical": {
+        "topk": [
+          {
+            "value": "San Francisco",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "Boston",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "Seattle",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "Chicago",
+            "count": 1,
+            "ratio": 0.2
+          },
+          {
+            "value": "New York",
+            "count": 1,
+            "ratio": 0.2
+          }
+        ],
+        "avg_length": 8.2
+      },
+      "examples": [
+        "New York",
+        "San Francisco",
+        "Chicago"
+      ]
+    },
+    {
+      "name": "salary",
+      "duckdb_type": "BIGINT",
+      "null_count": 0,
+      "null_ratio": 0.0,
+      "distinct_count": 5,
+      "semantic_type": "numeric",
+      "numeric": {
+        "min": 50000,
+        "max": 75000,
+        "mean": 62000.0,
+        "stddev": 10368.220676663861,
+        "q1": 55000.0,
+        "median": 60000.0,
+        "q3": 70000.0,
+        "iqr": 15000.0,
+        "outlier_low": 32500.0,
+        "outlier_high": 92500.0,
+        "outlier_count": 0,
+        "zeros": 0,
+        "negatives": 0
+      },
+      "examples": [
+        50000,
+        75000,
+        60000
+      ]
+    }
+  ],
+  "duckdb_version": "1.4.1",
+  "engine": "duckdb"
+}
