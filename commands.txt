@@ -1,0 +1,18 @@
+--Docker--
+Start
+docker compose -f /Users/shatayu/Desktop/CalHacks/docker-compose.yml up -d
+
+Health Check
+curl http://localhost:8080/v1/.well-known/ready
+
+Stop
+docker compose -f /Users/shatayu/Desktop/CalHacks/docker-compose.yml down
+
+Stop and wipe data
+docker compose down -v
+
+
+--Python--
+cd /Users/shatayu/Desktop/CalHacks
+pip install --upgrade pip
+pip install -r requirements.txt
