@@ -1,6 +1,6 @@
 --Docker--
 Start
-docker compose -f /Users/shatayu/Desktop/CalHacks/docker-compose.yml up -d
+docker compose -f /Users/anujmore/Development/CalHacks/docker-compose.yml up -d
 
 Health Check
 curl http://localhost:8080/v1/.well-known/ready
