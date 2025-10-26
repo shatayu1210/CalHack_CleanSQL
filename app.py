@@ -366,9 +366,23 @@ def initialise_assistant(dataframe: pd.DataFrame, filename: str) -> Optional[str
     """Prepare the DataAssistant and return an error message on failure."""
     reset_assistant_state()
 
-    fd, temp_path = tempfile.mkstemp(suffix=".csv")
+    # Clean all existing RAG records in Weaviate before new upload
+    try:
+        from profiler import W_CLIENT
+        if W_CLIENT:
+        
+        
+            # Delete all objects in CleanSQLColumn class
+            objs = W_CLIENT.query.get('CleanSQLColumn', ['_additional { id }']).do()
+            ids = [o['_additional']['id'] for o in objs.get('data', {}).get('Get', {}).get('CleanSQLColumn', []) if '_additional' in o]
+            for oid in ids:
+                W_CLIENT.data_object.delete(oid, class_name='CleanSQLColumn')
+    except Exception:
+        pass
+
+    fd, temp_path = tempfile.mkstemp(suffix=".parquet")
     os.close(fd)
-    dataframe.to_csv(temp_path, index=False)
+    dataframe.to_parquet(temp_path, index=False)
 
     try:
         profile = profile_csv(temp_path, None, 10, True, False)
@@ -457,7 +471,7 @@ with upload_col:
     )
 
 with tips_col:
-    st.markdown("<h3>Tips for best results</h3>", unsafe_allow_html=True)
+    st.markdown('<h3 style="display:inline; text-decoration:underline">Tips for best results</h3>', unsafe_allow_html=True)
     st.markdown(
         """
         <ul class="follow-up-list">
@@ -556,7 +570,7 @@ with query_col:
     prompt = st.text_area(
         "Natural language prompt",
         key="prompt_input",
-        placeholder='Example: "Show me the top 10 rows" or "What is the average salary?"',
+        placeholder='Example: "What is the average G1 grade for females?"',
         disabled=(
             not st.session_state.query_ready or st.session_state.is_running_query
         ),
@@ -566,33 +580,45 @@ with query_col:
 
 with button_col:
     st.markdown("<h3>Run it</h3>", unsafe_allow_html=True)
+    button_label = "Running..." if st.session_state.is_running_query else "Run Query"
     ask_button = st.button(
-        "Run Query",
+        button_label,
         type="primary",
         disabled=(
             not st.session_state.query_ready or st.session_state.is_running_query
         ),
         use_container_width=True,
+        key="run_query_btn"
     )
+    spinner_placeholder = st.empty()
+    if st.session_state.is_running_query:
+        spinner_placeholder.spinner('Running query...')
+    else:
+        spinner_placeholder.empty()
+
 
 prompt = st.session_state.prompt_input
 
 if ask_button:
+    # Clear debug logs, results, and previews on rerun
+    st.session_state.last_error = None
+    st.session_state.last_question = None
+    st.session_state.last_answer = None
+    st.session_state.last_sql = None
+    st.session_state.last_raw_sql = None
+    st.session_state.last_robust_sql = None
+    st.session_state.result_df = None
+    st.session_state.result_truncated = False
+    st.session_state.last_notes = ""
+    st.session_state.follow_up_questions = []
+    st.session_state.show_raw_modal = False
+    st.session_state.show_robust_modal = False
+    st.session_state.query_logs = []
+
     question = (prompt or "").strip()
     if not question:
         st.session_state.is_running_query = False
         st.session_state.last_error = "Please enter a question to run."
-        st.session_state.last_question = None
-        st.session_state.last_answer = None
-        st.session_state.last_sql = None
-        st.session_state.last_raw_sql = None
-        st.session_state.last_robust_sql = None
-        st.session_state.result_df = None
-        st.session_state.result_truncated = False
-        st.session_state.last_notes = ""
-        st.session_state.follow_up_questions = []
-        st.session_state.show_raw_modal = False
-        st.session_state.show_robust_modal = False
         _record_query_debug(question, None, None, st.session_state.last_error)
     else:
         st.session_state.last_question = question
@@ -622,7 +648,7 @@ if ask_button:
         else:
             st.session_state.is_running_query = True
             try:
-                with st.spinner("Running query..."):
+                with st.spinner('Running query...'):
                     response = assistant.ask_question(question, profile)
                 if not isinstance(response, dict):
                     st.session_state.last_answer = str(response)
@@ -702,8 +728,9 @@ if ask_button:
             finally:
                 st.session_state.is_running_query = False
 
-if st.session_state.last_error:
-    st.error(st.session_state.last_error)
+# Only show warning for errors
+# if st.session_state.last_error:
+#     st.error(st.session_state.last_error)
 
 parsed_question, parsed_answer = parse_question_answer(st.session_state.last_answer)
 if st.session_state.last_question is None and parsed_question:
@@ -711,16 +738,15 @@ if st.session_state.last_question is None and parsed_question:
 
 display_answer = parsed_answer.strip()
 
-if display_answer or st.session_state.last_notes:
-    st.markdown(
-        '<div class="section-title">Assistant response</div>', unsafe_allow_html=True
-    )
+if display_answer or st.session_state.last_error:
+    if st.session_state.last_error:
+        st.warning(st.session_state.last_error)
     if display_answer:
         st.markdown(
             to_html_block(display_answer, "assistant-answer"),
             unsafe_allow_html=True,
         )
-    if st.session_state.last_notes:
+    if st.session_state.last_notes and str(st.session_state.last_notes).strip():
         st.markdown(
             to_html_block(st.session_state.last_notes, "assistant-notes"),
             unsafe_allow_html=True,
@@ -768,16 +794,18 @@ _render_query_popup(
     robust_modal_placeholder,
 )
 
-if st.session_state.result_df is not None:
+if st.session_state.result_df is not None or getattr(st.session_state, 'nothing_to_show', False):
     st.markdown(
         '<div class="section-title">Query results</div>', unsafe_allow_html=True
     )
-    if st.session_state.result_df.empty:
+    if getattr(st.session_state, 'nothing_to_show', False):
+        st.markdown("Nothing to show")
+    elif st.session_state.result_df is not None and st.session_state.result_df.empty:
         st.markdown(
             "<p class='helper-text'>Query executed successfully but returned no rows.</p>",
             unsafe_allow_html=True,
         )
-    else:
+    elif st.session_state.result_df is not None:
         st.dataframe(st.session_state.result_df, use_container_width=True)
         if st.session_state.result_truncated:
             st.caption("Showing the first 200 rows of the result.")

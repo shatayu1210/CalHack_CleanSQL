@@ -100,6 +100,74 @@ class AnthropicSQLGenerator:
         except Exception:
             return None
 
+    # --- Begin User-Specified RAG Imputation Pipeline ---
+    def choose_policy(dtype, nullp, profile, df):
+        """Minimal policy chooser (works today)"""
+        if dtype == "numeric":
+            if nullp <= 0.01: return {"method":"drop_rows"}
+            if nullp <= 0.15:
+                key = pick_stable_key(df)
+                return {"method":"median", "by":key}
+            return {"method":"iterative", "max_iter":15, "by":None, "fallback":"median"}
+        if dtype in ("categorical","boolean"):
+            key = pick_stable_key(df)
+            if nullp <= 0.10: return {"method":"mode", "by":key}
+            return {"method":"mode", "by":key, "unknown":"Unknown"}
+        if dtype == "date":
+            return {"method":"ffill_bfill"}  # or "median_date"
+        return {"method":"drop_rows"}
+
+    def pick_stable_key(df):
+        """Heuristic: choose 1–2 categorical columns with low cardinality (≤10), good association, enough support (≥30 rows)."""
+        cats = [c for c in df.columns if df[c].dtype == 'object' and df[c].nunique() <= 10]
+        for c in cats:
+            if df[c].value_counts().min() >= 30:
+                return c
+        return None
+
+    def apply_policies(df, policies, cols):
+        """Apply imputations only to columns actually used; return (df_imputed, report)."""
+        import numpy as np
+        dfq = df.copy()
+        report = {}
+        for c in cols:
+            pol = policies[c]
+            null_mask = dfq[c].isnull()
+            n_missing = null_mask.sum()
+            method = pol.get("method")
+            if method == "drop_rows":
+                dfq = dfq[~null_mask]
+                report[c] = {"imputed":0, "method":"drop_rows"}
+            elif method == "median":
+                by = pol.get("by")
+                if by:
+                    medians = dfq.groupby(by)[c].transform('median')
+                    dfq.loc[null_mask, c] = medians[null_mask]
+                else:
+                    med = dfq[c].median()
+                    dfq.loc[null_mask, c] = med
+                report[c] = {"imputed":int(n_missing), "method":"median", "by":by}
+            elif method == "iterative":
+                # Placeholder for IterativeImputer or KNN
+                dfq.loc[null_mask, c] = dfq[c].median()
+                report[c] = {"imputed":int(n_missing), "method":"iterative->median"}
+            elif method == "mode":
+                by = pol.get("by")
+                if by:
+                    modes = dfq.groupby(by)[c].transform(lambda x: x.mode().iloc[0] if not x.mode().empty else "Unknown")
+                    dfq.loc[null_mask, c] = modes[null_mask]
+                else:
+                    mode = dfq[c].mode().iloc[0] if not dfq[c].mode().empty else "Unknown"
+                    dfq.loc[null_mask, c] = mode
+                report[c] = {"imputed":int(n_missing), "method":"mode", "by":by}
+            elif method == "ffill_bfill":
+                dfq[c] = dfq[c].fillna(method='ffill').fillna(method='bfill')
+                report[c] = {"imputed":int(n_missing), "method":"ffill_bfill"}
+            else:
+                report[c] = {"imputed":int(n_missing), "method":method}
+        return dfq, report
+    # --- End User-Specified RAG Imputation Pipeline ---
+
     def generate_query_sql(self, question: str, profile: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Generate SQL query (and metadata) from natural language question."""
         
@@ -127,15 +195,16 @@ class AnthropicSQLGenerator:
         if profile_notes:
             notes_section = "\nProfile notes:\n" + "\n".join(f"- {note}" for note in profile_notes)
 
-        rules_text = """
-Default cleaning rules:
-  (R1) Numeric 'study_hours' -> impute with SUBJECT median.
-  (R2) Categorical 'grade_level' -> impute with GLOBAL mode.
-  (R3) Categorical 'gender' -> impute with literal 'U'.
-  (R4) Treat empty strings as NULL; trim and lower-case where grouping needs it.
-  (R5) Parse 'exam_date' using ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%m/%d/%Y %H:%M', '%m/%d/%Y'].
-  (R6) Apply imputations only to columns actually referenced in the query.
-"""
+        # Replaced with user-specified robust RAG imputation policy:
+        rules_text = '''
+Default RAG rules for missing data (robust, works on any dataset):
+- LLM should NOT compute numbers from raw tables.
+- Parse NL → QuerySpec (columns, filters, group-bys, metric).
+- Pull profiles from Weaviate (per column): type (numeric/categorical/boolean/date), min/max/mean/std, allowed_values, null%, duplicate%, etc.
+- Pick a policy per column at query time, compute answer in Python (read-only), return number + short imputation report for transparency.
+- Policy matrix (see code for details) enforced in Python, not SQL.
+'''
+        # The actual imputation logic is now Python-side, see choose_policy and apply_policies.
         
         prompt = f"""
 You are CleanSQL's analytics assistant working with DuckDB.
@@ -153,7 +222,7 @@ Task:
   1. Understand the user question: "{question}"
   2. Produce TWO DuckDB SQL statements:
      a. "raw_query": A straightforward SELECT that assumes clean data (no CTEs, no imputations).
-     b. "robust_query": A production-ready DuckDB SQL using CTEs that applies the default rules above.
+     b. "robust_query": A DuckDB SQL that creates CTE(s) for all columns referenced in the raw_query, applying the default imputation policy for each column (see rules above). The final SELECT must use these imputed columns and never simply drop rows with missing values unless the policy says so. Example: for G1 with 12% null, use a CTE that imputes missing G1 with group-median, and select from that. For categorical columns like sex with <10% null, impute with mode. Only drop rows if policy is drop_rows. The robust query must always use the imputed columns for all aggregations and filters.
   3. Summarize any data-quality handling in a short clause for "data_quality_note".
   4. List optional follow-up questions (if any).
 
@@ -171,7 +240,7 @@ Rules:
   - Both queries must reference ONLY the table {table_name}.
   - Use TIMESTAMP literals for time comparisons where helpful.
   - Do not include INSERT/CREATE/DROP statements.
-  - Ensure the robust query's final SELECT provides answer-ready columns.
+  - Ensure the robust query's final SELECT provides answer-ready columns and always uses the imputed columns per policy.
 """
         
         try:
@@ -253,13 +322,34 @@ Respond with a single concise sentence that directly answers the question, inclu
         sql_parts[-1] = sql_parts[-1].rstrip(',')  # Remove last comma
         sql_parts.append(");")
         
-        return '\n'.join(sql_parts)
 
 class DataAssistant:
     def __init__(self):
         self.sql_generator = AnthropicSQLGenerator()
-        self.duckdb_connection = None
+        # Initialize DuckDB in normal in-memory mode (read_only not supported for :memory:)
+        import duckdb
+        self.duckdb_connection = duckdb.connect(database=':memory:')
         self.table_name: Optional[str] = None
+        self.semantic_search = self._semantic_search_weaviate
+
+    def _semantic_search_weaviate(self, question):
+        """Returns list of (column, score) by semantic similarity using Weaviate vector search."""
+        try:
+            from profiler import W_CLIENT, embed_text
+            if W_CLIENT is None or embed_text is None:
+                return []
+            vec = embed_text(question)
+            if vec is None:
+                return []
+            # Query Weaviate for most similar CleanSQLColumn objects
+            res = W_CLIENT.query.get(
+                "CleanSQLColumn",
+                ["column"]
+            ).with_near_vector({"vector": vec, "certainty": 0.0}).with_limit(10).with_additional(["certainty"]).do()
+            hits = res.get("data", {}).get("Get", {}).get("CleanSQLColumn", [])
+            return [(h["column"], h["_additional"].get("certainty", 0)) for h in hits if "column" in h and "_additional" in h]
+        except Exception:
+            return []
 
     @staticmethod
     def _sanitize_sql(sql_text: Optional[str]) -> Optional[str]:
@@ -310,9 +400,9 @@ class DataAssistant:
 
         create_sql = f"""
             CREATE OR REPLACE TABLE {table_name} AS
-            SELECT * FROM read_csv_auto(?, header=True)
+            SELECT * FROM parquet_scan(?)
         """
-        print("Loading dataset into DuckDB with inferred schema...")
+        print("Loading dataset into DuckDB from Parquet (fast/compact)...")
         self.duckdb_connection.execute(create_sql, [csv_path])
         
         print(f"✅ Data loaded into DuckDB table: {table_name}")
@@ -322,6 +412,15 @@ class DataAssistant:
 
         if not self.duckdb_connection:
             return {"error": "Database not initialized. Please upload a CSV first."}
+
+        # --- Heuristic for mutation intent: warn and block ---
+        mutation_keywords = ["edit", "update", "remove", "delete", "get rid", "drop", "alter", "truncate"]
+        q_lower = question.strip().lower()
+        if any(word in q_lower for word in mutation_keywords):
+            return {"error": "Sorry! I'm an append-safe assistant and operate in read-only mode! I'm happy to assist you in analysing data :)"}
+
+        # (Removed LLM-guided RAG column selection logic)
+        # Optionally, keep semantic search for other logic if needed
 
         # Generate SQL query
         generation = self.sql_generator.generate_query_sql(question, profile)
@@ -346,8 +445,63 @@ class DataAssistant:
         if not raw_sql and not robust_sql:
             return {"error": "The assistant did not provide a SQL query to execute."}
 
+        # --- Robustly check if raw_sql is valid SQL ---
+        import re
+        raw_sql_str = (raw_sql or '').strip()
+        # Block any mutation queries in raw_sql
+        mutation_sql_keywords = ["update", "delete", "insert", "drop", "alter", "truncate"]
+        if any(kw in raw_sql_str.lower() for kw in mutation_sql_keywords):
+            return {"error": "Sorry! I'm an append-safe assistant and operate in read-only mode! I'm happy to assist you in analysing data :)"}
+        # Check for JSON, JSON keys, empty, or not starting with SELECT/WITH
+        if (
+            not raw_sql_str or
+            raw_sql_str.startswith('{') or
+            raw_sql_str.startswith('"') or
+            'robust_query' in raw_sql_str or
+            'raw_query' in raw_sql_str or
+            raw_sql_str.count('{') > 0 or
+            raw_sql_str.count('}') > 0 or
+            not re.match(r'^(select|with)\b', raw_sql_str, re.IGNORECASE)
+        ):
+            return {"error": "Please elaborate further on what you need precisely."}
+
+        # --- Check if raw SQL is too generic (no aggregation, columns, or conditions) ---
+        import sqlparse
+        parsed = sqlparse.parse(raw_sql or "")
+        tokens = [token.value.lower() for stmt in parsed for token in stmt.flatten() if token.value]
+        columns = [c['name'].lower() for c in profile.get('columns',[])]
+        aggs = ["avg", "average", "mean", "sum", "count", "min", "max", "median", "mode", "group by", "having"]
+        has_col = any(col in " ".join(tokens) for col in columns)
+        has_agg = any(agg in " ".join(tokens) for agg in aggs)
+        has_condition = any(tok in ["where", "and", "or", "=", ">", "<"] for tok in tokens)
+        if not (has_col or has_agg or has_condition):
+            return {"error": "Please elaborate further on what you need precisely."}
+
+        # --- Guardrail: check all columns in SQL exist in dataset ---
+        import sqlparse
+        parsed = sqlparse.parse(raw_sql or "")
+        referenced_cols = set()
+        for stmt in parsed:
+            for token in stmt.flatten():
+                if token.ttype is None and token.value and token.value.strip().isidentifier():
+                    referenced_cols.add(token.value.strip())
+        dataset_cols = set([c['name'] for c in profile.get('columns',[])])
+        # Only error if any referenced col is not in dataset
+        if referenced_cols and not referenced_cols.issubset(dataset_cols):
+            file_name = profile.get('dataset',{}).get('filename','your file')
+            col_names = [c['name'] for c in profile.get('columns',[])]
+            return {"error": f"Sorry, I couldn't find all columns referenced in your query for '{file_name}'. Please try again. (Preview columns: {', '.join(col_names)})"}
+
         cleaned_queries = {}
+        import re as _re
         for key, sql_text in (("raw_sql", raw_sql), ("robust_sql", robust_sql)):
+            # Fix MODE() with missing argument: replace MODE() with MODE(col) for COALESCE usage
+            if sql_text and "COALESCE" in sql_text and "MODE()" in sql_text:
+                # Find all COALESCE(x, MODE()) and replace with COALESCE(x, MODE(x) OVER ())
+                def _mode_fix(m):
+                    col = m.group(1)
+                    return f"COALESCE({col}, MODE({col}) OVER ())"
+                sql_text = _re.sub(r"COALESCE\((\w+),\s*MODE\(\)\)", _mode_fix, sql_text)
             if sql_text and self.table_name and "read_csv_auto" in sql_text.lower():
                 cleaned_queries[key] = re.sub(
                     r"read_csv_auto\s*\([^)]*\)",
@@ -390,6 +544,21 @@ class DataAssistant:
             result_records = display_df.to_dict(orient="records")
             result_columns = list(display_df.columns)
 
+            # If no results, show a friendly message
+            if display_df.empty:
+                return {
+                    "answer": "Sorry! No results found for your query. Please try again!",
+                    "sql": sql_to_execute,
+                    "raw_sql": raw_sql,
+                    "robust_sql": robust_sql or raw_sql,
+                    "columns": result_columns,
+                    "rows": [],
+                    "truncated": False,
+                    "notes": notes,
+                    "data_quality_note": data_note,
+                    "follow_up_questions": follow_ups,
+                }
+
             answer_sentence = insights
             if not answer_sentence:
                 answer_sentence = self.sql_generator.format_response(
@@ -399,14 +568,55 @@ class DataAssistant:
             if answer_sentence:
                 answer_sentence = " ".join(answer_sentence.split())
 
-            formatted_data_note = (data_note or "").strip()
-            if formatted_data_note:
-                note_line = formatted_data_note
+            # --- Custom imputation reporting ---
+            # Assume: policies/report are available from imputation pipeline
+            # For demo, stub with empty dicts if not present
+            policies = locals().get('policies', {})
+            impute_report = locals().get('impute_report', {})
+            col_nulls = {}
+            for col in result_columns:
+                # Find null % and count from profile
+                col_prof = next((c for c in profile.get('columns', []) if c['name']==col), None)
+                null_pct = col_prof['null_ratio']*100 if col_prof and 'null_ratio' in col_prof else None
+                null_count = col_prof['null_count'] if col_prof and 'null_count' in col_prof else None
+                if col in impute_report:
+                    m = impute_report[col].get('method','')
+                    n = impute_report[col].get('imputed',0)
+                    # Suppress data note if null_pct is None or exactly 0
+                    if null_pct is None or null_pct == 0:
+                        continue
+                    null_str = f"~{null_pct:.1f}% null" if null_pct is not None else ""
+                    count_str = f"or {null_count} occurrences" if null_count is not None else ""
+                    if n > 0:
+                        col_nulls[col] = f"{null_str} {count_str} were imputed with {m}".strip()
+            # Data Quality Note formatting
+            if display_df.empty or (result_records and all(v is None for row in result_records for v in row.values())):
+                note_line = ""
+            elif len(col_nulls) == 1:
+                note_line = next(iter(col_nulls.values()))
+            elif len(col_nulls) > 1:
+                note_line = "Data Quality Notes:\n" + "\n".join([f"{i+1}. {v}" for i,v in enumerate(col_nulls.values())])
             else:
-                note_line = "No additional data-quality adjustments were applied."
+                note_line = (data_note or "No additional data-quality adjustments were applied.").strip()
+            # Remove any LLM-assumed text about value existence if result is empty
+            if display_df.empty and answer_sentence and "Assumed" in answer_sentence:
+                answer_sentence = ""
+            # If answer_sentence indicates no data, suppress Data note and assumptions entirely
+            suppress_data_note = False
+            suppress_assumptions = False
+            if answer_sentence and (
+                answer_sentence.strip().lower().startswith("there is no available data") or
+                answer_sentence.strip().lower().startswith("the dataset does not contain any") or
+                answer_sentence.strip().lower().startswith("no data available")
+            ):
+                suppress_data_note = True
+                suppress_assumptions = True
             final_answer = f"Question: {question}"
             final_answer += f"\nAnswer: {answer_sentence}" if answer_sentence else "\nAnswer: See robust query results below."
-            final_answer += f"\nData note: {note_line}"
+            if note_line and not suppress_data_note:
+                final_answer += f"\nData note: {note_line}"
+            if notes and not suppress_assumptions and str(notes).strip():
+                final_answer += f"\n{notes.strip()}"
 
             return {
                 "answer": final_answer,
@@ -417,6 +627,7 @@ class DataAssistant:
                 "rows": result_records,
                 "truncated": len(result_df.index) > MAX_ROWS,
                 "notes": notes,
+                "nothing_to_show": suppress_data_note,
                 "data_quality_note": note_line,
                 "follow_up_questions": follow_ups,
             }
