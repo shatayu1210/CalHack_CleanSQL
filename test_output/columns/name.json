@@ -1,0 +1,47 @@
+{
+  "dataset": "test_data.csv",
+  "column": "name",
+  "profile": {
+    "name": "name",
+    "duckdb_type": "VARCHAR",
+    "null_count": 0,
+    "null_ratio": 0.0,
+    "distinct_count": 5,
+    "semantic_type": "category",
+    "categorical": {
+      "topk": [
+        {
+          "value": "Jane",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "Charlie",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "Alice",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "Bob",
+          "count": 1,
+          "ratio": 0.2
+        },
+        {
+          "value": "John",
+          "count": 1,
+          "ratio": 0.2
+        }
+      ],
+      "avg_length": 4.6
+    },
+    "examples": [
+      "John",
+      "Jane",
+      "Bob"
+    ]
+  }
+}

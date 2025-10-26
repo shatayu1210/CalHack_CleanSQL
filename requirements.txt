@@ -1,3 +1,6 @@
 duckdb>=1.0.0
 orjson>=3.9.10
 weaviate-client>=4.6.0
+anthropic
+dotenv
+sqlparse

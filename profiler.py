@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import sys
 import time
-import hashlib
 from typing import Any, Dict, List, Optional
+
 import duckdb
 
 try:
@@ -114,10 +115,14 @@ def profile_csv(csv_path: str,
                 date_try_cast_for_varchar: bool) -> Dict[str, Any]:
     con = duckdb.connect()
     con.execute("PRAGMA threads=" + str(os.cpu_count() or 8))
+    file_lower = csv_path.lower()
     auto_opts = []
     if sample_rows:
         auto_opts.append(f"SAMPLE_SIZE={sample_rows}")
-    src_sql = f"SELECT * FROM read_csv_auto('{csv_path}', {', '.join(auto_opts)})" if auto_opts else f"SELECT * FROM read_csv_auto('{csv_path}')"
+    if file_lower.endswith('.parquet'):
+        src_sql = f"SELECT * FROM parquet_scan('{csv_path}')"
+    else:
+        src_sql = f"SELECT * FROM read_csv_auto('{csv_path}', {', '.join(auto_opts)})" if auto_opts else f"SELECT * FROM read_csv_auto('{csv_path}')"
     con.execute(f"CREATE VIEW v AS {src_sql}")
     schema_rows = con.execute("PRAGMA table_info('v')").fetchall()
     columns = [{"name": r[1], "duckdb_type": r[2]} for r in schema_rows]
@@ -297,7 +302,10 @@ def build_search_text(dataset_name: str, col: Dict[str, Any]) -> str:
                   f"outliers:{n.get('outlier_count')}"]
     if "categorical" in col:
         topk = col["categorical"].get("topk") or []
-        parts.append("top_values: " + ", ".join([str(t['value']) for t in topk]))
+        values = [str(t['value']) for t in topk]
+        parts.append("top_values: " + ", ".join(values))
+        # For robust semantic search, also add each value as a separate tag
+        parts += [f"cat_value: {v}" for v in values]
     if "datetime" in col:
         d = col["datetime"]
         parts += [f"date_min:{d.get('min')} date_max:{d.get('max')} invalid:{d.get('invalid_parse')}"]
@@ -375,6 +383,35 @@ def main():
     print(f"[ok] Output: {args.out}")
     if args.weaviate_url:
         print(f"[ok] Ingested to Weaviate class: {args.weaviate_class}")
+    
+    # NEW: Initialize LLM-powered data assistant
+    try:
+        from llm_integration import DataAssistant
+        print("\n🤖 Initializing AI Data Assistant...")
+        assistant = DataAssistant()
+        assistant.setup_database(prof, args.csv)
+        
+        # Interactive Q&A loop
+        print("\n💬 Ask questions about your data! (type 'quit' to exit)")
+        print("💡 Example: 'What's the average age?' or 'Show me the top 5 cities'")
+        
+        while True:
+            question = input("\n❓ Your question: ").strip()
+            if question.lower() in ['quit', 'exit', 'q']:
+                break
+            
+            if question:
+                response = assistant.ask_question(question, prof)
+                print(f"\n🤖 Assistant: {response}")
+        
+        assistant.close()
+        print("\n👋 Goodbye!")
+        
+    except ImportError:
+        print("\n⚠️  LLM integration not available. Install anthropic and python-dotenv to enable AI features.")
+    except Exception as e:
+        print(f"\n⚠️  LLM integration failed: {e}")
+        print("Continuing without AI features...")
 
 
 if __name__ == "__main__":

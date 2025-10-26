@@ -1,6 +1,6 @@
 --Docker--
 Start
-docker compose -f /Users/shatayu/Desktop/CalHacks/docker-compose.yml up -d
+docker compose -f /Users/anujmore/Development/CalHacks/docker-compose.yml up -d
 
 Health Check
 curl http://localhost:8080/v1/.well-known/ready
@@ -16,3 +16,23 @@ docker compose down -v
 cd /Users/shatayu/Desktop/CalHacks
 pip install --upgrade pip
 pip install -r requirements.txt
+
+
+--Run App (Streamlit)--
+cd /Users/shatayu/Desktop/CalHacks/Latest/CalHack_CleanSQL
+python3 -m venv venv
+source venv/bin/activate
+pip install streamlit
+pip install -r requirements.txt
+./venv/bin/streamlit run app.py
+
+--Check Weaviate Contents--
+1> JSON:
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ Get { CleanSQLColumn { dataset column semantic_type null_ratio distinct_count search_text profile_json _additional { id vector } } } }"}'
+
+2> Vector:
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ Get { CleanSQLColumn(where: {path: [\"_additional\", \"id\"], operator: Equal, valueString: \"<your-id>\"}) { _additional { vector } } } }"}'
