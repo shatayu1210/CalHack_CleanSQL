@@ -13,6 +13,7 @@ import pandas as pd
 from llm_integration import DataAssistant
 from profiler import profile_csv
 
+
 TRUE_VALUES = {"true", "t", "yes", "y", "1"}
 FALSE_VALUES = {"false", "f", "no", "n", "0"}
 BOOLEAN_COLUMNS = {
