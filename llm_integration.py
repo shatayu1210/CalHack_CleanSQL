@@ -260,6 +260,30 @@ class DataAssistant:
         self.sql_generator = AnthropicSQLGenerator()
         self.duckdb_connection = None
         self.table_name: Optional[str] = None
+
+    @staticmethod
+    def _sanitize_sql(sql_text: Optional[str]) -> Optional[str]:
+        """Trim stray markdown/quote wrappers that break DuckDB parsing."""
+        if not sql_text or not isinstance(sql_text, str):
+            return sql_text
+
+        cleaned = sql_text.strip()
+        if not cleaned:
+            return cleaned
+
+        wrappers = ('"""', "'''", "```", '"', "'")
+        for wrapper in wrappers:
+            if cleaned.startswith(wrapper) and cleaned.endswith(wrapper):
+                cleaned = cleaned[len(wrapper) : -len(wrapper)].strip()
+                break
+
+        # Handle dangling trailing quote without a matching opener
+        if cleaned.endswith('"') and cleaned.count('"') % 2 == 1:
+            cleaned = cleaned[:-1].rstrip()
+        if cleaned.endswith("'") and cleaned.count("'") % 2 == 1:
+            cleaned = cleaned[:-1].rstrip()
+
+        return cleaned
     
     def setup_database(self, profile: Dict[str, Any], csv_path: str):
         """Setup DuckDB database with generated schema"""
@@ -336,6 +360,9 @@ class DataAssistant:
 
         raw_sql = cleaned_queries.get("raw_sql")
         robust_sql = cleaned_queries.get("robust_sql")
+
+        raw_sql = self._sanitize_sql(raw_sql)
+        robust_sql = self._sanitize_sql(robust_sql)
 
         sql_to_execute = robust_sql or raw_sql
 

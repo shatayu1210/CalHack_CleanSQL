@@ -74,10 +74,10 @@ body {
     gap: 0.5rem;
     border-radius: 999px;
     padding: 0.35rem 1.1rem;
-    background: rgba(148, 163, 184, 0.45);
-    font-size: 0.85rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    background: #048BCF;
+    font-size: 0.95rem;
+    font-weight: 800;
+    letter-spacing: 0.07em;
     margin-bottom: 0.75rem;
     color: rgba(255, 255, 255, 0.95);
 }
@@ -107,7 +107,7 @@ body {
 .helper-text {
     font-size: 0.9rem;
     color: var(--text-muted);
-    margin-top: 0.5rem;
+    margin-top: 0.3rem;
 }
 
 .assistant-answer {
@@ -310,6 +310,25 @@ def reset_assistant_state():
     st.session_state.show_raw_modal = False
     st.session_state.show_robust_modal = False
     st.session_state.is_running_query = False
+    st.session_state.query_logs = []
+
+
+def _record_query_debug(
+    question: Optional[str],
+    raw_sql: Optional[str],
+    robust_sql: Optional[str],
+    error: Optional[str] = None,
+) -> None:
+    """Store executed SQL for debugging."""
+    entry = {
+        "question": question or "",
+        "raw_sql": raw_sql or "",
+        "robust_sql": robust_sql or "",
+        "error": error or "",
+    }
+    logs = st.session_state.get("query_logs") or []
+    logs.append(entry)
+    st.session_state.query_logs = logs[-20:]
 
 
 def _render_query_popup(
@@ -397,6 +416,7 @@ DEFAULT_STATE: Dict[str, Any] = {
     "follow_up_questions": [],
     "show_raw_modal": False,
     "show_robust_modal": False,
+    "query_logs": [],
 }
 
 for key, value in DEFAULT_STATE.items():
@@ -410,7 +430,7 @@ for key, value in DEFAULT_STATE.items():
 st.markdown(
     """
     <section class="hero">
-        <span class="hero-badge">CleanSQL Assistant</span>
+        <span class="hero-badge">CleanSQL</span>
         <h1>Query your data at the speed of thought</h1>
         <p>Upload your tabular data, generate clean SQL, and explore insights instantly — no manual querying required.</p>
     </section>
@@ -432,7 +452,7 @@ with upload_col:
         label_visibility="collapsed",
     )
     st.markdown(
-        '<div class="helper-text">Supports CSV, XLSX, or XLS files up to 50MB.</div>',
+        '<div class="helper-text">Supports CSV, XLSX, or XLS files.</div>',
         unsafe_allow_html=True,
     )
 
@@ -449,6 +469,8 @@ with tips_col:
         unsafe_allow_html=True,
     )
 
+upload_progress = st.empty()
+
 if uploaded_file is None:
     if st.session_state.file_signature is not None:
         reset_assistant_state()
@@ -458,11 +480,15 @@ if uploaded_file is None:
         st.session_state.prompt_input = ""
         st.session_state.last_notes = ""
         st.session_state.follow_up_questions = []
+        st.session_state.query_logs = []
+    upload_progress.empty()
 else:
     signature = (uploaded_file.name, getattr(uploaded_file, "size", None))
     if st.session_state.file_signature != signature:
         try:
+            progress_bar = upload_progress.progress(5, text="Profiling the uploaded file...")
             dataframe = load_dataframe(uploaded_file)
+            progress_bar.progress(30, text="File profiled. Preparing session...")
             st.session_state.dataframe = dataframe
             st.session_state.filename = uploaded_file.name
             st.session_state.file_signature = signature
@@ -478,12 +504,15 @@ else:
             st.session_state.show_raw_modal = False
             st.session_state.show_robust_modal = False
             st.session_state.is_running_query = False
+            st.session_state.query_logs = []
 
             error_message = initialise_assistant(dataframe, uploaded_file.name)
+            progress_bar.progress(80, text="Initialising assistant...")
             if error_message:
                 st.session_state.last_error = error_message
             else:
-                st.success("Data loaded. Ask a question about your dataset.")
+                progress_bar.progress(100, text="Upload complete!")
+                st.success("All set! Ask a question about your dataset.")
         except Exception as exc:
             reset_assistant_state()
             st.session_state.dataframe = None
@@ -492,6 +521,10 @@ else:
             st.session_state.last_error = str(exc)
             st.session_state.last_notes = ""
             st.session_state.follow_up_questions = []
+        finally:
+            upload_progress.empty()
+    else:
+        upload_progress.empty()
 
 
 if st.session_state.dataframe is None:
@@ -560,6 +593,7 @@ if ask_button:
         st.session_state.follow_up_questions = []
         st.session_state.show_raw_modal = False
         st.session_state.show_robust_modal = False
+        _record_query_debug(question, None, None, st.session_state.last_error)
     else:
         st.session_state.last_question = question
         assistant = st.session_state.assistant
@@ -579,6 +613,12 @@ if ask_button:
             st.session_state.follow_up_questions = []
             st.session_state.show_raw_modal = False
             st.session_state.show_robust_modal = False
+            _record_query_debug(
+                question,
+                None,
+                None,
+                st.session_state.last_error,
+            )
         else:
             st.session_state.is_running_query = True
             try:
@@ -596,6 +636,7 @@ if ask_button:
                     st.session_state.follow_up_questions = []
                     st.session_state.show_raw_modal = False
                     st.session_state.show_robust_modal = False
+                    _record_query_debug(question, None, None, st.session_state.last_answer)
                 elif response.get("error"):
                     st.session_state.last_error = response["error"]
                     st.session_state.last_answer = None
@@ -611,6 +652,12 @@ if ask_button:
                     )
                     st.session_state.show_raw_modal = False
                     st.session_state.show_robust_modal = False
+                    _record_query_debug(
+                        question,
+                        response.get("raw_sql"),
+                        robust_sql,
+                        st.session_state.last_error,
+                    )
                 else:
                     st.session_state.last_answer = response.get("answer")
                     robust_sql = response.get("robust_sql") or response.get("sql")
@@ -633,6 +680,12 @@ if ask_button:
                     )
                     st.session_state.show_raw_modal = False
                     st.session_state.show_robust_modal = False
+                    _record_query_debug(
+                        question,
+                        response.get("raw_sql"),
+                        robust_sql,
+                        None,
+                    )
             except Exception as exc:
                 st.session_state.last_error = str(exc)
                 st.session_state.last_answer = None
@@ -645,6 +698,7 @@ if ask_button:
                 st.session_state.follow_up_questions = []
                 st.session_state.show_raw_modal = False
                 st.session_state.show_robust_modal = False
+                _record_query_debug(question, None, None, st.session_state.last_error)
             finally:
                 st.session_state.is_running_query = False
 
@@ -736,3 +790,22 @@ if follow_ups:
     )
     items = "".join(f"<li>{html.escape(item)}</li>" for item in follow_ups)
     st.markdown(f"<ul class='follow-up-list'>{items}</ul>", unsafe_allow_html=True)
+
+debug_logs = st.session_state.get("query_logs") or []
+if debug_logs:
+    with st.expander("Debug query log", expanded=False):
+        for entry in reversed(debug_logs):
+            question_text = entry.get("question", "") or "(blank question)"
+            st.markdown(f"**Question:** {html.escape(question_text)}")
+            raw_sql = entry.get("raw_sql") or ""
+            robust_sql = entry.get("robust_sql") or ""
+            error_text = entry.get("error") or ""
+            if raw_sql:
+                st.markdown("*Raw SQL*:")
+                st.code(raw_sql, language="sql")
+            if robust_sql and robust_sql != raw_sql:
+                st.markdown("*Robust SQL*:")
+                st.code(robust_sql, language="sql")
+            if error_text:
+                st.markdown(f"*Error*: {html.escape(error_text)}")
+            st.markdown("---")
