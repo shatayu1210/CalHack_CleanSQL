@@ -104,43 +104,75 @@ class AnthropicSQLGenerator:
         """Generate SQL query (and metadata) from natural language question."""
         
         columns_info = []
-        for col in profile['columns']:
-            col_info = f"- {col['name']}: {col['duckdb_type']} ({col['semantic_type']})"
-            if 'examples' in col:
-                col_info += f" - Examples: {col['examples'][:3]}"
-            columns_info.append(col_info)
+        for col in profile.get("columns", []):
+            name = col.get("name", "")
+            dtype = col.get("duckdb_type", "UNKNOWN")
+            semantic = col.get("semantic_type", "unknown")
+            parts = [f"- {name}: {dtype}", f"semantic={semantic}"]
+            null_ratio = col.get("null_ratio")
+            if null_ratio is not None:
+                parts.append(f"null_pct≈{round(float(null_ratio) * 100, 1)}%")
+            parse_fail = col.get("parse_fail_pct")
+            if parse_fail is not None:
+                parts.append(f"parse_fail≈{round(float(parse_fail), 1)}%")
+            if "examples" in col and col["examples"]:
+                examples = col["examples"][:3]
+                parts.append(f"examples={examples}")
+            columns_info.append("  " + ", ".join(parts))
 
         dataset = profile.get("dataset", {})
         table_name = dataset.get("table_name") or dataset.get("filename", "uploaded_data").replace(".csv", "").replace("-", "_")
+        profile_notes = profile.get("notes") or []
+        notes_section = ""
+        if profile_notes:
+            notes_section = "\nProfile notes:\n" + "\n".join(f"- {note}" for note in profile_notes)
+
+        rules_text = """
+Default cleaning rules:
+  (R1) Numeric 'study_hours' -> impute with SUBJECT median.
+  (R2) Categorical 'grade_level' -> impute with GLOBAL mode.
+  (R3) Categorical 'gender' -> impute with literal 'U'.
+  (R4) Treat empty strings as NULL; trim and lower-case where grouping needs it.
+  (R5) Parse 'exam_date' using ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%m/%d/%Y %H:%M', '%m/%d/%Y'].
+  (R6) Apply imputations only to columns actually referenced in the query.
+"""
         
         prompt = f"""
-        You are a data analysis assistant working with DuckDB.
+You are CleanSQL's analytics assistant working with DuckDB.
 
-        Dataset information:
-        - Table name: {table_name}
-        - Row count: {profile['dataset']['row_count']}
-        - Columns:
-        {chr(10).join(columns_info)}
+Dataset:
+  - Table: {table_name}
+  - Rows: {profile['dataset']['row_count']}
+  - Columns:
+{chr(10).join(columns_info) if columns_info else '  (none listed)'}
+{notes_section}
 
-        Task:
-        - Understand the user question: "{question}"
-        - Produce a valid DuckDB SELECT query that answers the question.
-        - Provide a concise insight explaining what the query is expected to show.
-        - Mention any assumptions or warnings only if necessary.
+{rules_text}
 
-        Response format:
-        {{
-          "sql_query": "...",      // single DuckDB-compatible SELECT statement targeting {table_name}
-          "insights": "...",       // short natural-language summary of the expected result
-          "notes": "...",          // optional notes or assumptions (use "" if none)
-          "follow_up_questions": [] // optional list of strings with follow-up ideas, empty list if none
-        }}
+Task:
+  1. Understand the user question: "{question}"
+  2. Produce TWO DuckDB SQL statements:
+     a. "raw_query": A straightforward SELECT that assumes clean data (no CTEs, no imputations).
+     b. "robust_query": A production-ready DuckDB SQL using CTEs that applies the default rules above.
+  3. Summarize any data-quality handling in a short clause for "data_quality_note".
+  4. List optional follow-up questions (if any).
 
-        Requirements:
-        - Return ONLY the JSON object (no markdown, no explanation outside JSON).
-        - The SQL must reference only the table {table_name}.
-        - Do NOT include read_csv_auto, create table, drop table, or comments in the SQL.
-        """
+Formatting requirements:
+{{
+  "raw_query": "...",              // plain SELECT referencing only {table_name}
+  "robust_query": "...",           // DuckDB SQL with CTEs + imputations
+  "data_quality_note": "...",      // one sentence, mention imputations/cleaning actually used
+  "notes": "...",                  // optional assumptions (empty string if none)
+  "follow_up_questions": []        // optional string list, [] if none
+}}
+
+Rules:
+  - Return ONLY the JSON object (no markdown fences or prose outside JSON).
+  - Both queries must reference ONLY the table {table_name}.
+  - Use TIMESTAMP literals for time comparisons where helpful.
+  - Do not include INSERT/CREATE/DROP statements.
+  - Ensure the robust query's final SELECT provides answer-ready columns.
+"""
         
         try:
             response = self.client.messages.create(
@@ -154,15 +186,24 @@ class AnthropicSQLGenerator:
                 print("Failed to parse JSON from LLM response; falling back to normalization.")
                 sql_text = self._normalize_sql_output(raw_text)
                 return {
-                    "sql_query": sql_text,
+                    "raw_query": sql_text,
+                    "robust_query": sql_text,
                     "insights": "",
                     "notes": "",
+                    "data_quality_note": "",
                     "follow_up_questions": [],
                 }
-            if "sql_query" in payload and isinstance(payload["sql_query"], str):
-                payload["sql_query"] = self._normalize_sql_output(payload["sql_query"])
+            if "raw_query" in payload and isinstance(payload["raw_query"], str):
+                payload["raw_query"] = self._normalize_sql_output(payload["raw_query"])
+            if "robust_query" in payload and isinstance(payload["robust_query"], str):
+                payload["robust_query"] = self._normalize_sql_output(payload["robust_query"])
+            if "sql_query" in payload and not payload.get("robust_query"):
+                payload["robust_query"] = self._normalize_sql_output(payload["sql_query"])
+            if not payload.get("raw_query") and payload.get("sql_query"):
+                payload["raw_query"] = self._normalize_sql_output(payload["sql_query"])
             payload["insights"] = payload.get("insights") or ""
             payload["notes"] = payload.get("notes") or ""
+            payload["data_quality_note"] = payload.get("data_quality_note") or ""
             follow_ups = payload.get("follow_up_questions")
             if isinstance(follow_ups, list):
                 payload["follow_up_questions"] = follow_ups
@@ -179,16 +220,14 @@ class AnthropicSQLGenerator:
         """Format SQL results into human-friendly response"""
         
         prompt = f"""
-        Format this SQL query result into a natural, human-friendly response.
-        
-        Question: "{question}"
-        Dataset: {profile['dataset']['filename']}
-        
-        SQL Result: {json.dumps(sql_result, indent=2)}
-        
-        Provide a clear, conversational answer that directly addresses the question.
-        Include relevant numbers and insights.
-        """
+You are rewriting analytics results for an end user.
+
+Question: "{question}"
+Dataset: {profile['dataset']['filename']}
+SQL Result: {json.dumps(sql_result, indent=2)}
+
+Respond with a single concise sentence that directly answers the question, includes the key numbers from the result, and avoids extra commentary.
+"""
         
         try:
             response = self.client.messages.create(
@@ -226,24 +265,31 @@ class DataAssistant:
         """Setup DuckDB database with generated schema"""
         import duckdb
 
-        # Generate schema
-        schema_sql = self.sql_generator.generate_schema_sql(profile)
-        print("Generated Schema:")
-        print(schema_sql)
-        
-        # Connect to DuckDB
         self.duckdb_connection = duckdb.connect()
-        
-        # Create table
-        self.duckdb_connection.execute(schema_sql)
-        
-        # Load data
-        table_name = profile['dataset']['filename'].replace('.csv', '').replace('-', '_')
+
+        raw_table_name = profile.get("dataset", {}).get("filename", "uploaded_data")
+        base_name = (
+            raw_table_name.replace(".csv", "")
+            .replace(".xlsx", "")
+            .replace(".xls", "")
+        )
+        sanitized = re.sub(r"\W+", "_", base_name).strip("_")
+        if not sanitized:
+            sanitized = "uploaded_data"
+        if sanitized[0].isdigit():
+            sanitized = f"t_{sanitized}"
+        table_name = sanitized.lower()
+
         profile.setdefault("dataset", {})
         profile["dataset"]["table_name"] = table_name
         self.table_name = table_name
-        load_sql = f"INSERT INTO {table_name} SELECT * FROM read_csv_auto('{csv_path}')"
-        self.duckdb_connection.execute(load_sql)
+
+        create_sql = f"""
+            CREATE OR REPLACE TABLE {table_name} AS
+            SELECT * FROM read_csv_auto(?, header=True)
+        """
+        print("Loading dataset into DuckDB with inferred schema...")
+        self.duckdb_connection.execute(create_sql, [csv_path])
         
         print(f"✅ Data loaded into DuckDB table: {table_name}")
     
@@ -259,33 +305,47 @@ class DataAssistant:
             return {"error": "Sorry, I couldn't generate a query for that question."}
 
         if isinstance(generation, dict):
-            sql_query = generation.get("sql_query")
+            raw_sql = generation.get("raw_query")
+            robust_sql = generation.get("robust_query") or raw_sql
             insights = generation.get("insights", "")
             notes = generation.get("notes", "")
             follow_ups = generation.get("follow_up_questions", [])
+            data_note = generation.get("data_quality_note", "")
         else:
-            sql_query = generation
+            raw_sql = generation
+            robust_sql = generation
             insights = ""
             notes = ""
             follow_ups = []
+            data_note = ""
 
-        if not sql_query:
+        if not raw_sql and not robust_sql:
             return {"error": "The assistant did not provide a SQL query to execute."}
 
-        print(f"Generated SQL: {sql_query}")
+        cleaned_queries = {}
+        for key, sql_text in (("raw_sql", raw_sql), ("robust_sql", robust_sql)):
+            if sql_text and self.table_name and "read_csv_auto" in sql_text.lower():
+                cleaned_queries[key] = re.sub(
+                    r"read_csv_auto\s*\([^)]*\)",
+                    self.table_name,
+                    sql_text,
+                    flags=re.IGNORECASE,
+                )
+            else:
+                cleaned_queries[key] = sql_text
 
-        if "read_csv_auto" in sql_query.lower() and self.table_name:
-            sql_query = re.sub(
-                r"read_csv_auto\s*\([^)]*\)",
-                self.table_name,
-                sql_query,
-                flags=re.IGNORECASE,
-            )
-            print(f"Rewritten SQL to use table name: {sql_query}")
+        raw_sql = cleaned_queries.get("raw_sql")
+        robust_sql = cleaned_queries.get("robust_sql")
+
+        sql_to_execute = robust_sql or raw_sql
+
+        print(f"Generated raw SQL: {raw_sql}")
+        if robust_sql and robust_sql != raw_sql:
+            print(f"Generated robust SQL: {robust_sql}")
 
         try:
             # Execute query
-            cursor = self.duckdb_connection.execute(sql_query)
+            cursor = self.duckdb_connection.execute(sql_to_execute)
             try:
                 result_df = cursor.fetch_df()
             except Exception:
@@ -303,27 +363,45 @@ class DataAssistant:
             result_records = display_df.to_dict(orient="records")
             result_columns = list(display_df.columns)
 
-            answer_text = insights
-            if not answer_text:
-                answer_text = self.sql_generator.format_response(
+            answer_sentence = insights
+            if not answer_sentence:
+                answer_sentence = self.sql_generator.format_response(
                     question, result_df.to_dict(orient="records"), profile
                 )
+            answer_sentence = (answer_sentence or "").strip()
+            if answer_sentence:
+                answer_sentence = " ".join(answer_sentence.split())
+
+            formatted_data_note = (data_note or "").strip()
+            if formatted_data_note:
+                note_line = formatted_data_note
+            else:
+                note_line = "No additional data-quality adjustments were applied."
+            final_answer = f"Question: {question}"
+            final_answer += f"\nAnswer: {answer_sentence}" if answer_sentence else "\nAnswer: See robust query results below."
+            final_answer += f"\nData note: {note_line}"
 
             return {
-                "answer": answer_text,
-                "sql": sql_query,
+                "answer": final_answer,
+                "sql": sql_to_execute,
+                "raw_sql": raw_sql,
+                "robust_sql": robust_sql or raw_sql,
                 "columns": result_columns,
                 "rows": result_records,
                 "truncated": len(result_df.index) > MAX_ROWS,
                 "notes": notes,
+                "data_quality_note": note_line,
                 "follow_up_questions": follow_ups,
             }
 
         except Exception as e:
             return {
                 "error": f"Error executing query: {e}",
-                "sql": sql_query,
+                "sql": sql_to_execute,
+                "raw_sql": raw_sql,
+                "robust_sql": robust_sql or raw_sql,
                 "notes": notes,
+                "data_quality_note": data_note or "No additional data-quality adjustments were applied.",
                 "follow_up_questions": follow_ups,
             }
     
